@@ -1,120 +1,193 @@
 import os
 import logging
 import asyncio
+import random
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 from threading import Thread
 
-# --- Настройка Flask (для 24/7) ---
-app = Flask('')
-@app.route('/')
-def home(): return "Бот работает!"
+# ===============================
+# 🔐 БЕЗОПАСНОСТЬ
+# ===============================
+# ❌ НИКАКИХ токенов и айди в коде
+# ✅ ВСЁ берётся из Environment Variables (Render)
 
-def run(): app.run(host='0.0.0.0', port=8080)
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-# --- Настройка бота ---
-API_TOKEN = os.getenv('BOT_TOKEN')
-CHANNEL_ID = os.getenv('CHANNEL_ID') 
-ADMIN_ID = os.getenv('ADMIN_ID') # Твой ID из Secrets
-CHANNEL_URL = "https://t.me/celebgifts"
-REF_URL = "https://t.me/budabonus_bot?start=8551410557" # Твоя рефка
+if not BOT_TOKEN:
+    raise Exception("❌ BOT_TOKEN не найден")
+if not CHANNEL_ID:
+    raise Exception("❌ CHANNEL_ID не найден")
+if not ADMIN_ID:
+    raise Exception("❌ ADMIN_ID не найден")
 
+# ===============================
+# 🌐 Flask (чтобы Render не спал)
+# ===============================
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot is alive"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=8080)
+
+Thread(target=run_flask).start()
+
+# ===============================
+# ⚙️ BOT
+# ===============================
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN, parse_mode="HTML")
+
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
 
-# Функция для сохранения ID пользователя в базу (файл)
-def save_user(user_id):
-    if not os.path.exists("users.txt"):
-        open("users.txt", "w").close()
+CHANNEL_URL = "https://t.me/celebgifts"
+REF_URL = "https://t.me/budabonus_bot?start=8551410557"
 
-    with open("users.txt", "r") as f:
+USERS_FILE = "users.txt"
+
+# ===============================
+# 💾 USERS
+# ===============================
+def save_user(user_id: int):
+    if not os.path.exists(USERS_FILE):
+        open(USERS_FILE, "w").close()
+
+    with open(USERS_FILE, "r") as f:
         users = f.read().splitlines()
 
     if str(user_id) not in users:
-        with open("users.txt", "a") as f:
+        with open(USERS_FILE, "a") as f:
             f.write(str(user_id) + "\n")
 
-async def check_sub(user_id):
+# ===============================
+# 📢 SUB CHECK
+# ===============================
+async def is_subscribed(user_id: int) -> bool:
     try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return member.status != 'left'
-    except Exception: return False
+        member = await bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in ("member", "administrator", "creator")
+    except:
+        return False
 
-@dp.message_handler(commands=['start'])
+# ===============================
+# ▶️ START
+# ===============================
+@dp.message_handler(commands=["start"])
 async def start(message: types.Message):
-    save_user(message.from_user.id) # Сохраняем юзера для рассылки
-    user_name = message.from_user.first_name
+    user_id = message.from_user.id
+    name = message.from_user.first_name
 
-    if await check_sub(message.from_user.id):
+    save_user(user_id)
+
+    if await is_subscribed(user_id):
         text = (
-            f"🌟 <b>С возвращением, {user_name}!</b>\n\n"
-            f"📝 <b>Инструкция:</b>\n"
-            f"1. Нажми кнопку ниже\n"
-            f"2. Подпишись на <u>всех</u> спонсоров в открывшемся боте\n"
-            f"3. Получи свою награду! 🎁"
+            f"🌟 <b>С возвращением, {name}!</b>\n\n"
+            f"✅ Подписка подтверждена.\n"
+            f"Выбери действие 👇"
         )
-        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🎁 ЗАБРАТЬ МОИ НАГРАДЫ", url=REF_URL))
-        await message.answer(text, reply_markup=markup)
+        keyboard = InlineKeyboardMarkup(row_width=1).add(
+            InlineKeyboardButton("🎁 Забрать награды", url=REF_URL),
+            InlineKeyboardButton("🎰 Казино (по фану)", callback_data="casino")
+        )
+        await message.answer(text, reply_markup=keyboard)
     else:
-        text = (f"👋 <b>Привет, {user_name}!</b>\n\nЧтобы получить доступ к подаркам, подпишись на наш канал 👇")
-        markup = InlineKeyboardMarkup(row_width=1).add(
-            InlineKeyboardButton("📢 Подписаться на канал", url=CHANNEL_URL),
-            InlineKeyboardButton("✅ Я подписался, проверить", callback_data="check_subscription")
+        text = (
+            f"👋 <b>Привет, {name}!</b>\n\n"
+            f"Чтобы получить доступ, подпишись на канал 👇"
         )
-        await message.answer(text, reply_markup=markup)
+        keyboard = InlineKeyboardMarkup(row_width=1).add(
+            InlineKeyboardButton("📢 Подписаться", url=CHANNEL_URL),
+            InlineKeyboardButton("✅ Я подписался", callback_data="check_sub")
+        )
+        await message.answer(text, reply_markup=keyboard)
 
-@dp.callback_query_handler(text="check_subscription")
-async def callback_check(call: types.CallbackQuery):
-    if await check_sub(call.from_user.id):
-        await call.answer("🔥 Доступ получен!")
-        success_text = (
-            f"🎉 <b>Проверка пройдена!</b>\n\n"
-            f"⚠️ <b>ВАЖНО:</b> После перехода нужно будет <b>подписаться на всех спонсоров</b> для получения награды!"
+# ===============================
+# ✅ CHECK SUB BUTTON
+# ===============================
+@dp.callback_query_handler(text="check_sub")
+async def check_sub(callback: types.CallbackQuery):
+    if await is_subscribed(callback.from_user.id):
+        text = (
+            "🎉 <b>Подписка подтверждена!</b>\n\n"
+            "Теперь доступно:\n"
+            "🎁 Награды\n"
+            "🎰 Казино"
         )
-        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🚀 ПЕРЕЙТИ И ПОЛУЧИТЬ", url=REF_URL))
-        await call.message.edit_text(success_text, reply_markup=markup)
+        keyboard = InlineKeyboardMarkup(row_width=1).add(
+            InlineKeyboardButton("🎁 Забрать награды", url=REF_URL),
+            InlineKeyboardButton("🎰 Казино (по фану)", callback_data="casino")
+        )
+        await callback.message.edit_text(text, reply_markup=keyboard)
     else:
-        await call.answer("⚠️ Вы не подписаны на канал!", show_alert=True)
+        await callback.answer("❌ Ты не подписан на канал", show_alert=True)
 
-# --- БЛОК РАССЫЛКИ ---
-@dp.message_handler(commands=['broadcast'])
+# ===============================
+# 🎰 CASINO
+# ===============================
+@dp.callback_query_handler(text="casino")
+async def casino(callback: types.CallbackQuery):
+    roll = random.randint(1, 100)
+
+    if roll <= 35:
+        text = (
+            "🎰 <b>КАЗИНО</b>\n\n"
+            "🔥 <b>ПОБЕДА!</b>\n"
+            "Сегодня удача на твоей стороне 😎"
+        )
+    else:
+        text = (
+            "🎰 <b>КАЗИНО</b>\n\n"
+            "💀 <b>Проигрыш</b>\n"
+            "Попробуй ещё раз 😉"
+        )
+
+    keyboard = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("🔁 Сыграть ещё раз", callback_data="casino")
+    )
+
+    await callback.message.answer(text, reply_markup=keyboard)
+
+# ===============================
+# 📢 BROADCAST (ONLY ADMIN)
+# ===============================
+@dp.message_handler(commands=["broadcast"])
 async def broadcast(message: types.Message):
-    # Проверка, что команду пишет админ
-    if str(message.from_user.id) != str(ADMIN_ID):
+    if message.from_user.id != ADMIN_ID:
         return
 
-    # Извлекаем текст сообщения (всё, что после /broadcast)
-    broadcast_text = message.text.replace("/broadcast", "").strip()
-
-    if not broadcast_text:
-        await message.answer("❌ Введи текст рассылки после команды. Пример:\n<code>/broadcast Всем привет!</code>")
+    text = message.text.replace("/broadcast", "").strip()
+    if not text:
+        await message.answer("❌ Напиши текст после команды")
         return
 
-    if not os.path.exists("users.txt"):
-        await message.answer("❌ База пользователей пуста.")
+    if not os.path.exists(USERS_FILE):
+        await message.answer("❌ Нет пользователей")
         return
 
-    with open("users.txt", "r") as f:
+    with open(USERS_FILE, "r") as f:
         users = f.read().splitlines()
 
-    count = 0
-    await message.answer(f"📢 Начинаю рассылку на {len(users)} пользователей...")
+    sent = 0
+    await message.answer(f"📢 Рассылка на {len(users)} пользователей")
 
-    for user_id in users:
+    for uid in users:
         try:
-            await bot.send_message(user_id, broadcast_text)
-            count += 1
-            await asyncio.sleep(0.05) # Защита от спам-фильтра Telegram
-        except Exception:
-            pass # Если юзер заблокировал бота, просто пропускаем
+            await bot.send_message(uid, text)
+            sent += 1
+            await asyncio.sleep(0.05)
+        except:
+            pass
 
-    await message.answer(f"✅ Рассылка завершена!\nДоставлено: {count} из {len(users)}")
+    await message.answer(f"✅ Готово! Отправлено: {sent}")
 
-if __name__ == '__main__':
-    keep_alive()
+# ===============================
+# 🚀 RUN
+# ===============================
+if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
